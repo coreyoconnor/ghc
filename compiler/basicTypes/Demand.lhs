@@ -27,7 +27,7 @@ module Demand (
         peelFV,
 
         DmdResult, CPRResult,
-        isBotRes, isTopRes, resTypeArgDmd, 
+        isBotRes, isTopRes, getDmdResult, resTypeArgDmd,
         topRes, botRes, cprProdRes, vanillaCprProdRes, cprSumRes,
         appIsBottom, isBottomingSig, pprIfaceStrictSig, 
         trimCPRInfo, returnsCPR, returnsCPR_maybe,
@@ -37,11 +37,11 @@ module Demand (
         seqDemand, seqDemandList, seqDmdType, seqStrictSig, 
 
         evalDmd, cleanEvalDmd, cleanEvalProdDmd, isStrictDmd, 
-        splitDmdTy, splitFVs,
+        splitDmdTy, splitFVs, splitProdCleanDmd,
         deferAfterIO,
         postProcessUnsat, postProcessDmdTypeM,
 
-        splitProdDmd, splitProdDmd_maybe, peelCallDmd, mkCallDmd,
+        splitProdDmd, splitProdDmd_maybe, peelCallDmd, mkCallDmd, mkCallDmdN,
         dmdTransformSig, dmdTransformDataConSig, dmdTransformDictSelSig,
         argOneShots, argsOneShots,
 
@@ -121,6 +121,10 @@ mkSCall :: StrDmd -> StrDmd
 mkSCall HyperStr = HyperStr
 mkSCall s        = SCall s
 
+mkSCallN :: Arity -> StrDmd -> StrDmd
+mkSCallN _ HyperStr = HyperStr
+mkSCallN n s        = applyN n SCall s
+
 mkSProd :: [MaybeStr] -> StrDmd
 mkSProd sx
   | any isHyperStr sx = HyperStr
@@ -171,19 +175,19 @@ bothMaybeStr s        Lazy        = s
 bothMaybeStr (Str s1) (Str s2) = Str (s1 `bothStr` s2)
 
 bothStr :: StrDmd -> StrDmd -> StrDmd
-bothStr HyperStr _             = HyperStr
-bothStr HeadStr s              = s
-bothStr (SCall _)  HyperStr    = HyperStr
-bothStr (SCall s1) HeadStr     = SCall s1
-bothStr (SCall s1) (SCall s2)  = SCall (s1 `bothStr` s2)
-bothStr (SCall _)  (SProd _)   = HyperStr  -- Weird
+bothStr HyperStr _               = HyperStr
+bothStr HeadStr s                = s
+bothStr (SCall _)  HyperStr      = HyperStr
+bothStr (SCall s1) HeadStr       = SCall s1
+bothStr (SCall s1) (SCall s2)    = SCall (s1 `bothStr` s2)
+bothStr (SCall _)  (SProd _)     = HyperStr  -- Weird
 
-bothStr (SProd _)  HyperStr    = HyperStr
-bothStr (SProd s1) HeadStr     = SProd s1
+bothStr (SProd _)  HyperStr      = HyperStr
+bothStr (SProd s1) HeadStr       = SProd s1
 bothStr (SProd s1) (SProd s2) 
-    | length s1 == length s2   = mkSProd (zipWith bothMaybeStr s1 s2)
-    | otherwise                = HyperStr  -- Weird
-bothStr (SProd _) (SCall _)    = HyperStr
+    | s1 `equalLength`  s2       = mkSProd (zipWith bothMaybeStr s1 s2)
+    | otherwise                  = HyperStr  -- Weird
+bothStr (SProd _) (SCall _)      = HyperStr
 
 -- utility functions to deal with memory leaks
 seqStrDmd :: StrDmd -> ()
@@ -191,9 +195,12 @@ seqStrDmd (SProd ds)   = seqStrDmdList ds
 seqStrDmd (SCall s)     = s `seq` () 
 seqStrDmd _            = ()
 
+seqListWith :: (a -> ()) -> [a] -> ()
+seqListWith _ [] = ()
+seqListWith s (x:xs) = s x `seq` seqListWith s xs
+
 seqStrDmdList :: [MaybeStr] -> ()
-seqStrDmdList [] = ()
-seqStrDmdList (d:ds) = seqMaybeStr d `seq` seqStrDmdList ds
+seqStrDmdList = seqListWith seqMaybeStr
 
 seqMaybeStr :: MaybeStr -> ()
 seqMaybeStr Lazy    = ()
@@ -285,7 +292,11 @@ useTop     = Use Many Used
 
 mkUCall :: Count -> UseDmd -> UseDmd
 --mkUCall c Used = Used c 
-mkUCall c a  = UCall c a
+mkUCall c u  = UCall c u
+
+mkUCallN :: Arity -> Count -> UseDmd -> UseDmd
+--mkUCall c Used = Used c
+mkUCallN n c u  = applyN n (UCall c) u
 
 mkUProd :: [MaybeUsed] -> UseDmd
 mkUProd ux 
@@ -309,7 +320,7 @@ lubUse (UCall c1 u1) (UCall c2 u2) = UCall (lubCount c1 c2) (lubUse u1 u2)
 lubUse (UCall _ _) _               = Used
 lubUse (UProd ux) UHead            = UProd ux 
 lubUse (UProd ux1) (UProd ux2)
-     | length ux1 == length ux2    = UProd $ zipWith lubMaybeUsed ux1 ux2
+     | ux1 `equalLength` ux2       = UProd $ zipWith lubMaybeUsed ux1 ux2
      | otherwise                   = Used
 lubUse (UProd {}) (UCall {})       = Used
 -- lubUse (UProd {}) Used             = Used
@@ -336,16 +347,16 @@ bothUse (UCall c u) UHead           = UCall c u
 --    use `lubUse` instead of `bothUse`!
 bothUse (UCall _ u1) (UCall _ u2)   = UCall Many (u1 `lubUse` u2)
 
-bothUse (UCall {}) _                = Used
-bothUse (UProd ux) UHead            = UProd ux 
+bothUse (UCall {}) _            = Used
+bothUse (UProd ux) UHead        = UProd ux
 bothUse (UProd ux1) (UProd ux2)
-      | length ux1 == length ux2    = UProd $ zipWith bothMaybeUsed ux1 ux2
-      | otherwise                   = Used
-bothUse (UProd {}) (UCall {})       = Used
--- bothUse (UProd {}) Used             = Used  -- Note [Used should win]
-bothUse Used (UProd ux)             = UProd (map (`bothMaybeUsed` useTop) ux)
-bothUse (UProd ux) Used             = UProd (map (`bothMaybeUsed` useTop) ux)
-bothUse Used _                      = Used  -- Note [Used should win]
+      | ux1 `equalLength` ux2   = UProd $ zipWith bothMaybeUsed ux1 ux2
+      | otherwise               = Used
+bothUse (UProd {}) (UCall {})   = Used
+-- bothUse (UProd {}) Used         = Used  -- Note [Used should win]
+bothUse Used (UProd ux)         = UProd (map (`bothMaybeUsed` useTop) ux)
+bothUse (UProd ux) Used         = UProd (map (`bothMaybeUsed` useTop) ux)
+bothUse Used _                  = Used  -- Note [Used should win]
 
 peelUseCall :: UseDmd -> Maybe (Count, UseDmd)
 peelUseCall (UCall c u)   = Just (c,u)
@@ -433,8 +444,7 @@ seqUseDmd (UCall c d)  = c `seq` seqUseDmd d
 seqUseDmd _            = ()
 
 seqMaybeUsedList :: [MaybeUsed] -> ()
-seqMaybeUsedList []     = ()
-seqMaybeUsedList (d:ds) = seqMaybeUsed d `seq` seqMaybeUsedList ds
+seqMaybeUsedList = seqListWith seqMaybeUsed
 
 seqMaybeUsed :: MaybeUsed -> ()
 seqMaybeUsed (Use c u)  = c `seq` seqUseDmd u
@@ -516,8 +526,7 @@ seqDemand :: JointDmd -> ()
 seqDemand (JD {strd = x, absd = y}) = seqMaybeStr x `seq` seqMaybeUsed y `seq` ()
 
 seqDemandList :: [JointDmd] -> ()
-seqDemandList [] = ()
-seqDemandList (d:ds) = seqDemand d `seq` seqDemandList ds
+seqDemandList = seqListWith seqDemand
 
 isStrictDmd :: Demand -> Bool
 -- See Note [Strict demands]
@@ -550,7 +559,7 @@ splitFVs is_thunk rhs_fvs
 %*                                                                      *
 %************************************************************************
 
-This domain differst from JointDemand in the sence that pure absence
+This domain differst from JointDemand in the sense that pure absence
 is taken away, i.e., we deal *only* with non-absent demands.
 
 Note [Strict demands]
@@ -610,6 +619,10 @@ mkOnceUsedDmd, mkManyUsedDmd :: CleanDemand -> JointDmd
 mkOnceUsedDmd (CD {sd = s,ud = a}) = mkJointDmd (Str s) (Use One a)
 mkManyUsedDmd (CD {sd = s,ud = a}) = mkJointDmd (Str s) (Use Many a)
 
+splitProdCleanDmd :: Arity -> CleanDemand -> [JointDmd]
+splitProdCleanDmd arity (CD {sd = s,ud = u})
+  = mkJointDmds (splitStrProdDmd arity s) (splitUseProdDmd arity u)
+
 getUsage :: CleanDemand -> UseDmd
 getUsage = ud
 
@@ -627,6 +640,10 @@ mkProdDmd dx
 mkCallDmd :: CleanDemand -> CleanDemand
 mkCallDmd (CD {sd = d, ud = u}) 
   = mkCleanDmd (mkSCall d) (mkUCall One u)
+
+mkCallDmdN :: Arity -> CleanDemand -> CleanDemand
+mkCallDmdN n (CD {sd = d, ud = u})
+  = mkCleanDmd (mkSCallN n d) (mkUCallN n One u)
 
 cleanEvalDmd :: CleanDemand
 cleanEvalDmd = mkCleanDmd HeadStr Used
@@ -697,7 +714,7 @@ DmdResult:     Dunno CPRResult
 
 CPRResult:         NoCPR
                    /    \
-            RetProd    RetSum ConTag
+  RetProd [DmdResult]    RetSum ConTag
 
 
 Product contructors return (Converges (RetProd rs))
@@ -717,16 +734,20 @@ data Termination r = Diverges    -- Definitely diverges
 
 type DmdResult = Termination CPRResult
 
-data CPRResult = NoCPR          -- Top of the lattice
-               | RetProd        -- Returns a constructor from a product type
-               | RetSum ConTag  -- Returns a constructor from a data type
+data CPRResult = NoCPR               -- Top of the lattice
+               | RetProd [DmdResult] -- Returns a constructor from a product type
+               | RetSum ConTag       -- Returns a constructor from a data type
                deriving( Eq, Show )
 
 lubCPR :: CPRResult -> CPRResult -> CPRResult
 lubCPR (RetSum t1) (RetSum t2) 
   | t1 == t2                       = RetSum t1
-lubCPR RetProd     RetProd     = RetProd
-lubCPR _ _                     = NoCPR
+lubCPR (RetProd ds1) (RetProd ds2)
+  | ds1 `equalLength` ds2          = RetProd (zipWith lubDmdResult ds1 ds2)
+    -- I'm thinking the could be unequal if two branches of a GADT case
+    -- returned a product constructor from a different data type
+    -- Also we use [] to mean [top,...,top]
+lubCPR _ _                         = NoCPR
 
 lubDmdResult :: DmdResult -> DmdResult -> DmdResult
 lubDmdResult Diverges       r              = r
@@ -757,7 +778,7 @@ instance Outputable DmdResult where
 instance Outputable CPRResult where
   ppr NoCPR        = empty
   ppr (RetSum n)   = char 'm' <> int n
-  ppr RetProd      = char 'm'
+  ppr (RetProd rs) = char 'm' <> parens (hcat (punctuate (char ',') (map ppr rs)))
 
 seqDmdResult :: DmdResult -> ()
 seqDmdResult Diverges = ()
@@ -767,7 +788,7 @@ seqDmdResult (Dunno c)     = seqCPRResult c
 seqCPRResult :: CPRResult -> ()
 seqCPRResult NoCPR        = ()
 seqCPRResult (RetSum n)   = n `seq` ()
-seqCPRResult RetProd      = ()
+seqCPRResult (RetProd rs) = seqListWith seqDmdResult rs
 
 
 ------------------------------------------------------------------------
@@ -785,15 +806,19 @@ cprSumRes :: ConTag -> DmdResult
 cprSumRes tag | opt_CprOff = topRes
               | otherwise  = Converges $ RetSum tag
 
-cprProdRes :: [DmdType] -> DmdResult
-cprProdRes _arg_tys
+cprProdRes :: [DmdResult] -> DmdResult
+cprProdRes arg_ress
   | opt_CprOff = topRes
-  | otherwise  = Converges $ RetProd
+  | otherwise  = Converges $ RetProd arg_ress
+
+getDmdResult :: DmdType -> DmdResult
+getDmdResult (DmdType _ [] r) = r       -- Only for data-typed arguments!
+getDmdResult _                = topRes
 
 vanillaCprProdRes :: Arity -> DmdResult
-vanillaCprProdRes _arity
+vanillaCprProdRes arity
   | opt_CprOff = topRes
-  | otherwise  = Converges $ RetProd
+  | otherwise  = Converges $ RetProd (replicate arity topRes)
 
 isTopRes :: DmdResult -> Bool
 isTopRes (Dunno NoCPR) = True
@@ -813,8 +838,8 @@ trimCPRInfo trim_all trim_sums res
 
     trimC (RetSum n)   | trim_all || trim_sums = NoCPR
                        | otherwise             = RetSum n
-    trimC RetProd      | trim_all  = NoCPR
-                       | otherwise = RetProd
+    trimC (RetProd rs) | trim_all  = NoCPR
+                       | otherwise = RetProd (map trimR rs)
     trimC NoCPR = NoCPR
 
 returnsCPR :: DmdResult -> Bool
@@ -827,7 +852,7 @@ returnsCPR_maybe Diverges      = Nothing
 
 retCPR_maybe :: CPRResult -> Maybe ConTag
 retCPR_maybe (RetSum t)  = Just t
-retCPR_maybe RetProd     = Just fIRST_TAG
+retCPR_maybe (RetProd _) = Just fIRST_TAG
 retCPR_maybe NoCPR       = Nothing
 
 resTypeArgDmd :: DmdResult -> JointDmd
@@ -1080,8 +1105,8 @@ nopDmdType = DmdType emptyDmdEnv [] topRes
 botDmdType = DmdType emptyDmdEnv [] botRes
 
 cprProdDmdType :: Arity -> DmdType
-cprProdDmdType _arity
-  = DmdType emptyDmdEnv [] (Converges RetProd)
+cprProdDmdType arity
+  = DmdType emptyDmdEnv [] (Converges (RetProd (replicate arity topRes)))
 
 isNopDmdType :: DmdType -> Bool
 isNopDmdType (DmdType env [] res)
@@ -1575,6 +1600,10 @@ zap_usg :: KillFlags -> UseDmd -> UseDmd
 zap_usg kfs (UCall c u) = UCall (zap_count kfs c) (zap_usg kfs u)
 zap_usg kfs (UProd us)  = UProd (map (zap_musg kfs) us)
 zap_usg _   u           = u
+
+applyN :: Int -> (a->a) -> a -> a
+applyN 0 _ x = x
+applyN n f x = applyN (n-1) f (f x)
 \end{code}
 
 \begin{code}
@@ -1747,13 +1776,13 @@ instance Binary DmdResult where
 
 instance Binary CPRResult where
     put_ bh (RetSum n)   = do { putByte bh 0; put_ bh n }
-    put_ bh RetProd      = putByte bh 1
+    put_ bh (RetProd rs) = do { putByte bh 1; put_ bh rs }
     put_ bh NoCPR        = putByte bh 2
 
     get  bh = do
             h <- getByte bh
             case h of 
-              0 -> do { n <- get bh; return (RetSum n) }
-              1 -> return RetProd
+              0 -> do { n  <- get bh; return (RetSum n) }
+              1 -> do { rs <- get bh; return (RetProd rs) }
               _ -> return NoCPR
 \end{code}
