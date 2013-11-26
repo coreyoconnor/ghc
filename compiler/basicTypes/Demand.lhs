@@ -33,6 +33,7 @@ module Demand (
         returnsCPR, returnsCPR_maybe, forgetCPR,
         StrictSig(..), mkStrictSig, mkClosedStrictSig, nopSig, botSig, cprProdSig,
         isNopSig, splitStrictSig, increaseStrictSigArity,
+        sigMayConverge,
         seqDemand, seqDemandList, seqDmdType, seqStrictSig, 
 
         evalDmd, cleanEvalDmd, cleanEvalProdDmd, isStrictDmd, 
@@ -806,15 +807,10 @@ getDmdResult _                = topRes
 maxCPRDepth :: Int
 maxCPRDepth = 3
 
--- With nested CPR, DmdResult can be arbitrarily deep; consider
--- data Rec1 = Foo Rec2 Rec2
--- data Rec2 = Bar Rec1 Rec1
--- 
--- x = Foo y y
--- y = Bar x x
--- 
+-- With nested CPR, DmdResult can be arbitrarily deep; consider e.g. the
+-- DmdResult of repeat
 -- So we need to forget information at a certain depth. We do that at all points
--- where we are constructing new RetCon constructors.
+-- where we are building RetCon constructors.
 cutDmdResult :: Int -> DmdResult -> DmdResult
 cutDmdResult 0 _ = topRes
 cutDmdResult _ Diverges = Diverges
@@ -824,6 +820,10 @@ cutDmdResult n (Dunno c) = Dunno (cutCPRResult n c)
 cutCPRResult :: Int -> CPRResult -> CPRResult
 cutCPRResult _ NoCPR = NoCPR
 cutCPRResult n (RetCon tag rs) = RetCon tag (map (cutDmdResult (n-1)) rs)
+
+-- Forget that something might converge for sure
+divergeDmdResult :: DmdResult -> DmdResult
+divergeDmdResult r = r `lubDmdResult` botRes
 
 -- Forget the CPR information, but remember if it converges or diverges
 -- Used for non-strict thunks and non-top-level things with sum type
@@ -1444,6 +1444,9 @@ botSig = StrictSig botDmdType
 
 cprProdSig :: Arity -> StrictSig
 cprProdSig arity = StrictSig (cprProdDmdType arity)
+
+sigMayConverge :: StrictSig -> StrictSig
+sigMayConverge (StrictSig (DmdType env ds res)) = (StrictSig (DmdType env ds (divergeDmdResult res)))
 
 argsOneShots :: StrictSig -> Arity -> [[OneShotInfo]]
 argsOneShots (StrictSig (DmdType _ arg_ds _)) n_val_args
