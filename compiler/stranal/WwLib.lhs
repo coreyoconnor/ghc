@@ -502,7 +502,7 @@ deepSplitCprType_maybe :: ConTag -> Type -> Maybe (DataCon, [Type], [Type], Coer
 deepSplitCprType_maybe con_tag ty
   | let (co, ty1) = topNormaliseNewType_maybe ty `orElse` (mkReflCo Representational ty, ty)
   , Just (tc, tc_args) <- splitTyConApp_maybe ty1
-  , isDataTyCon tc
+  , isDataTyCon tc || isUnboxedTupleTyCon tc
   , let cons = tyConDataCons tc
         con = ASSERT( cons `lengthAtLeast` con_tag ) cons !! (con_tag - fIRST_TAG)
   = Just (con, tc_args, dataConInstArgTys con tc_args, co)
