@@ -655,9 +655,10 @@ dmdAnalRhs top_lvl rec_flag env id rhs
 	-- See Note [NOINLINE and strictness]
 
     -- See Note [Product demands for function body]
-    body_dmd = case deepSplitProductType_maybe (exprType body) of
-                 Nothing            -> cleanEvalDmd
-                 Just (dc, _, _, _) -> cleanEvalProdDmd (dataConRepArity dc)
+    (is_sum_type, body_dmd)
+      = case deepSplitProductType_maybe (exprType body) of
+          Nothing            -> (True, cleanEvalDmd)
+          Just (dc, _, _, _) -> (False, cleanEvalProdDmd (dataConRepArity dc))
 
     -- See Note [Lazy and unleashable free variables]
     -- See Note [Aggregated demand for cardinality]
@@ -667,9 +668,10 @@ dmdAnalRhs top_lvl rec_flag env id rhs
 
     (lazy_fv, sig_fv) = splitFVs is_thunk rhs_fv1
 
-    rhs_res'  = trimCPRInfo trim_all trim_sums rhs_res
-    trim_all  = is_thunk && not_strict
-    trim_sums = not (isTopLevel top_lvl) -- See Note [CPR for sum types]
+    -- Note [CPR for sum types]
+    rhs_res' | (is_sum_type && not (isTopLevel top_lvl)) ||
+               (is_thunk && not_strict)                = forgetCPR rhs_res
+             | otherwise                               = rhs_res
 
     -- See Note [CPR for thunks]
     is_thunk = not (exprIsHNF rhs)

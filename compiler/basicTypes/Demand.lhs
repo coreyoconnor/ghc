@@ -30,10 +30,9 @@ module Demand (
         isBotRes, isTopRes, getDmdResult, resTypeArgDmd,
         topRes, botRes, cprConRes, vanillaCprConRes,
         appIsBottom, isBottomingSig, pprIfaceStrictSig, 
-        trimCPRInfo, returnsCPR, returnsCPR_maybe,
+        returnsCPR, returnsCPR_maybe, forgetCPR,
         StrictSig(..), mkStrictSig, mkClosedStrictSig, nopSig, botSig, cprProdSig,
         isNopSig, splitStrictSig, increaseStrictSigArity,
-
         seqDemand, seqDemandList, seqDmdType, seqStrictSig, 
 
         evalDmd, cleanEvalDmd, cleanEvalProdDmd, isStrictDmd, 
@@ -826,6 +825,13 @@ cutCPRResult :: Int -> CPRResult -> CPRResult
 cutCPRResult _ NoCPR = NoCPR
 cutCPRResult n (RetCon tag rs) = RetCon tag (map (cutDmdResult (n-1)) rs)
 
+-- Forget the CPR information, but remember if it converges or diverges
+-- Used for non-strict thunks and non-top-level things with sum type
+forgetCPR :: DmdResult -> DmdResult
+forgetCPR Diverges = Diverges
+forgetCPR (Converges _) = Converges NoCPR
+forgetCPR (Dunno _) = Dunno NoCPR
+
 cprConRes :: ConTag -> [DmdResult] -> DmdResult
 cprConRes tag arg_ress
   | opt_CprOff = topRes
@@ -843,20 +849,6 @@ isTopRes _             = False
 isBotRes :: DmdResult -> Bool
 isBotRes Diverges = True
 isBotRes _        = False
-
--- TODO: This currently ignores trim_sums. Evaluate if still required, and fix
--- Note [CPR for sum types]
-trimCPRInfo :: Bool -> Bool -> DmdResult -> DmdResult
-trimCPRInfo trim_all _trim_sums res
-  = trimR res
-  where
-    trimR (Converges c) = Converges (trimC c)
-    trimR (Dunno c)     = Dunno (trimC c)
-    trimR Diverges      = Diverges
-
-    trimC (RetCon n rs) | trim_all = NoCPR
-                        | otherwise             = RetCon n (map trimR rs)
-    trimC NoCPR = NoCPR
 
 returnsCPR :: DmdResult -> Bool
 returnsCPR dr = isJust (returnsCPR_maybe dr)
