@@ -559,7 +559,7 @@ splitFVs is_thunk rhs_fvs
 %*                                                                      *
 %************************************************************************
 
-This domain differst from JointDemand in the sense that pure absence
+This domain differs from JointDemand in the sense that pure absence
 is taken away, i.e., we deal *only* with non-absent demands.
 
 Note [Strict demands]

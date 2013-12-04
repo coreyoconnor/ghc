@@ -530,9 +530,6 @@ dmdAnalVarApp env dmd fun args
     --                                , ppr arg_tys, ppr cpr_info, ppr res_ty]) $
     ( res_ty
     , foldl App (Var fun) args')
-
-  | otherwise
-  = completeApp env (dmdTransform env fun (mkCallDmdN n_val_args dmd), Var fun) args
   where
     n_val_args = valArgCount args
     cxt_ds = splitProdCleanDmd  n_val_args dmd
@@ -552,6 +549,12 @@ dmdAnalVarApp env dmd fun args
       , (arg_tys, arg_rets, args') <- anal_con_args ds args
       = (arg_ty:arg_tys, arg_ret:arg_rets, arg':args')
     anal_con_args ds args = pprPanic "anal_con_args" (ppr args $$ ppr ds)
+
+dmdAnalVarApp env dmd fun args
+  = --pprTrace "dmdAnalVarApp" (vcat [ ppr fun, ppr args
+    --                               , ppr $ completeApp env (dmdTransform env fun (mkCallDmdN n_val_args dmd), Var fun) args
+    --                               ])
+    completeApp env (dmdTransform env fun (mkCallDmdN (valArgCount args) dmd), Var fun) args
 \end{code}
 
 %************************************************************************
