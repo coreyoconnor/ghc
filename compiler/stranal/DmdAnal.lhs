@@ -522,9 +522,7 @@ dmdAnalVarApp env dmd fun args
   | Just con <- isDataConWorkId_maybe fun  -- Data constructor
   , isVanillaDataCon con
   , n_val_args == dataConRepArity con      -- Saturated
-  , let cpr_info
-          | isProductTyCon (dataConTyCon con) = cprProdRes arg_rets
-          | otherwise                         = cprSumRes (dataConTag con)
+  , let cpr_info = cprConRes (dataConTag con) arg_rets
         res_ty = foldl bothDmdType (DmdType emptyDmdEnv [] cpr_info) arg_tys
   = -- pprTrace "dmdAnalVarApp" (vcat [ ppr con, ppr args, ppr n_val_args, ppr cxt_ds
     --                                , ppr arg_tys, ppr cpr_info, ppr res_ty]) $

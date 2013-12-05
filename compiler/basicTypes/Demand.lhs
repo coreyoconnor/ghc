@@ -28,7 +28,7 @@ module Demand (
 
         DmdResult, CPRResult,
         isBotRes, isTopRes, getDmdResult, resTypeArgDmd,
-        topRes, botRes, cprProdRes, vanillaCprProdRes, cprSumRes,
+        topRes, botRes, cprConRes, vanillaCprConRes,
         appIsBottom, isBottomingSig, pprIfaceStrictSig, 
         trimCPRInfo, returnsCPR, returnsCPR_maybe,
         StrictSig(..), mkStrictSig, mkClosedStrictSig, nopSig, botSig, cprProdSig,
@@ -713,11 +713,11 @@ DmdResult:     Dunno CPRResult
 
 
 CPRResult:         NoCPR
-                   /    \
-  RetProd [DmdResult]    RetSum ConTag
+                     |
+           RetCon ConTag [DmdResult]
 
 
-Product contructors return (Converges (RetProd rs))
+Constructors return (Converges (RetCon t rs))
 In a fixpoint iteration, start from Diverges
 We have lubs, but not glbs; but that is ok.
 
@@ -734,16 +734,14 @@ data Termination r = Diverges    -- Definitely diverges
 
 type DmdResult = Termination CPRResult
 
-data CPRResult = NoCPR               -- Top of the lattice
-               | RetProd [DmdResult] -- Returns a constructor from a product type
-               | RetSum ConTag       -- Returns a constructor from a data type
+data CPRResult = NoCPR                      -- Top of the lattice
+               | RetCon ConTag [DmdResult]  -- Returns a constructor from a data type
                deriving( Eq, Show )
 
 lubCPR :: CPRResult -> CPRResult -> CPRResult
-lubCPR (RetSum t1) (RetSum t2) 
-  | t1 == t2                       = RetSum t1
-lubCPR (RetProd ds1) (RetProd ds2)
-  | ds1 `equalLength` ds2          = RetProd (zipWith lubDmdResult ds1 ds2)
+lubCPR (RetCon ct1 ds1) (RetCon ct2 ds2)
+  | ct1 == ct2
+  , ds1 `equalLength` ds2          = RetCon ct1 (zipWith lubDmdResult ds1 ds2)
     -- I'm thinking the could be unequal if two branches of a GADT case
     -- returned a product constructor from a different data type
     -- Also we use [] to mean [top,...,top]
@@ -778,9 +776,8 @@ instance Outputable DmdResult where
   ppr (Dunno c)     = ppr c
 
 instance Outputable CPRResult where
-  ppr NoCPR        = empty
-  ppr (RetSum n)   = char 'm' <> int n
-  ppr (RetProd rs) = char 'm' <> parens (hcat (punctuate (char ',') (map ppr rs)))
+  ppr NoCPR         = empty
+  ppr (RetCon n rs) = char 'm' <> int n <> parens (hcat (punctuate (char ',') (map ppr rs)))
 
 seqDmdResult :: DmdResult -> ()
 seqDmdResult Diverges = ()
@@ -788,9 +785,8 @@ seqDmdResult (Converges c) = seqCPRResult c
 seqDmdResult (Dunno c)     = seqCPRResult c
 
 seqCPRResult :: CPRResult -> ()
-seqCPRResult NoCPR        = ()
-seqCPRResult (RetSum n)   = n `seq` ()
-seqCPRResult (RetProd rs) = seqListWith seqDmdResult rs
+seqCPRResult NoCPR         = ()
+seqCPRResult (RetCon n rs) = n `seq` seqListWith seqDmdResult rs
 
 
 ------------------------------------------------------------------------
@@ -804,23 +800,41 @@ topRes = Dunno NoCPR
 convRes = Converges NoCPR
 botRes = Diverges
 
-cprSumRes :: ConTag -> DmdResult
-cprSumRes tag | opt_CprOff = topRes
-              | otherwise  = Converges $ RetSum tag
-
-cprProdRes :: [DmdResult] -> DmdResult
-cprProdRes arg_ress
-  | opt_CprOff = topRes
-  | otherwise  = Converges $ RetProd arg_ress
-
 getDmdResult :: DmdType -> DmdResult
 getDmdResult (DmdType _ [] r) = r       -- Only for data-typed arguments!
 getDmdResult _                = topRes
 
-vanillaCprProdRes :: Arity -> DmdResult
-vanillaCprProdRes arity
+maxCPRDepth :: Int
+maxCPRDepth = 3
+
+-- With nested CPR, DmdResult can be arbitrarily deep; consider
+-- data Rec1 = Foo Rec2 Rec2
+-- data Rec2 = Bar Rec1 Rec1
+-- 
+-- x = Foo y y
+-- y = Bar x x
+-- 
+-- So we need to forget information at a certain depth. We do that at all points
+-- where we are constructing new RetCon constructors.
+cutDmdResult :: Int -> DmdResult -> DmdResult
+cutDmdResult 0 _ = topRes
+cutDmdResult _ Diverges = Diverges
+cutDmdResult n (Converges c) = Converges (cutCPRResult n c)
+cutDmdResult n (Dunno c) = Dunno (cutCPRResult n c)
+
+cutCPRResult :: Int -> CPRResult -> CPRResult
+cutCPRResult _ NoCPR = NoCPR
+cutCPRResult n (RetCon tag rs) = RetCon tag (map (cutDmdResult (n-1)) rs)
+
+cprConRes :: ConTag -> [DmdResult] -> DmdResult
+cprConRes tag arg_ress
   | opt_CprOff = topRes
-  | otherwise  = Converges $ RetProd (replicate arity topRes)
+  | otherwise  = Converges $ cutCPRResult maxCPRDepth $ RetCon tag arg_ress
+
+vanillaCprConRes :: ConTag -> Arity -> DmdResult
+vanillaCprConRes tag arity
+  | opt_CprOff = topRes
+  | otherwise  = Converges $ cutCPRResult maxCPRDepth $ RetCon tag (replicate arity topRes)
 
 isTopRes :: DmdResult -> Bool
 isTopRes (Dunno NoCPR) = True
@@ -830,18 +844,18 @@ isBotRes :: DmdResult -> Bool
 isBotRes Diverges = True
 isBotRes _        = False
 
+-- TODO: This currently ignores trim_sums. Evaluate if still required, and fix
+-- Note [CPR for sum types]
 trimCPRInfo :: Bool -> Bool -> DmdResult -> DmdResult
-trimCPRInfo trim_all trim_sums res
+trimCPRInfo trim_all _trim_sums res
   = trimR res
   where
     trimR (Converges c) = Converges (trimC c)
     trimR (Dunno c)     = Dunno (trimC c)
     trimR Diverges      = Diverges
 
-    trimC (RetSum n)   | trim_all || trim_sums = NoCPR
-                       | otherwise             = RetSum n
-    trimC (RetProd rs) | trim_all  = NoCPR
-                       | otherwise = RetProd (map trimR rs)
+    trimC (RetCon n rs) | trim_all = NoCPR
+                        | otherwise             = RetCon n (map trimR rs)
     trimC NoCPR = NoCPR
 
 returnsCPR :: DmdResult -> Bool
@@ -850,12 +864,11 @@ returnsCPR dr = isJust (returnsCPR_maybe dr)
 returnsCPR_maybe :: DmdResult -> Maybe ConTag
 returnsCPR_maybe (Converges c) = retCPR_maybe c
 returnsCPR_maybe (Dunno c)     = retCPR_maybe c
-returnsCPR_maybe Diverges      = Nothing
+returnsCPR_maybe _             = Nothing
 
 retCPR_maybe :: CPRResult -> Maybe ConTag
-retCPR_maybe (RetSum t)  = Just t
-retCPR_maybe (RetProd _) = Just fIRST_TAG
-retCPR_maybe NoCPR       = Nothing
+retCPR_maybe (RetCon t _) = Just t
+retCPR_maybe NoCPR        = Nothing
 
 resTypeArgDmd :: DmdResult -> JointDmd
 -- TopRes and BotRes are polymorphic, so that
@@ -1088,10 +1101,11 @@ bothDmdType (DmdType fv1 ds1 r1) (fv2, t2)
 instance Outputable DmdType where
   ppr (DmdType fv ds res) 
     = hsep [text "DmdType",
-            hcat (map ppr ds) <> ppr res,
+            hcat (map ppr ds) <> ppr_res,
             if null fv_elts then empty
             else braces (fsep (map pp_elt fv_elts))]
     where
+      ppr_res = if isTopRes res then empty else ppr res
       pp_elt (uniq, dmd) = ppr uniq <> text "->" <> ppr dmd
       fv_elts = ufmToList fv
 
@@ -1108,7 +1122,7 @@ botDmdType = DmdType emptyDmdEnv [] botRes
 
 cprProdDmdType :: Arity -> DmdType
 cprProdDmdType arity
-  = DmdType emptyDmdEnv [] (Converges (RetProd (replicate arity topRes)))
+  = DmdType emptyDmdEnv [] (Converges (RetCon fIRST_TAG (replicate arity topRes)))
 
 isNopDmdType :: DmdType -> Bool
 isNopDmdType (DmdType env [] res)
@@ -1777,14 +1791,12 @@ instance Binary DmdResult where
                   _ -> return Diverges }
 
 instance Binary CPRResult where
-    put_ bh (RetSum n)   = do { putByte bh 0; put_ bh n }
-    put_ bh (RetProd rs) = do { putByte bh 1; put_ bh rs }
-    put_ bh NoCPR        = putByte bh 2
+    put_ bh (RetCon n rs) = do { putByte bh 0; put_ bh n ; put_ bh rs }
+    put_ bh NoCPR         = putByte bh 1
 
     get  bh = do
             h <- getByte bh
             case h of 
-              0 -> do { n  <- get bh; return (RetSum n) }
-              1 -> do { rs <- get bh; return (RetProd rs) }
+              0 -> do { n <- get bh; rs <- get bh; return (RetCon n rs) }
               _ -> return NoCPR
 \end{code}

@@ -434,12 +434,10 @@ dataConCPR con
   , isVanillaDataCon con  -- No existentials 
   , wkr_arity > 0
   , wkr_arity <= mAX_CPR_SIZE
-  = if is_prod then vanillaCprProdRes (dataConRepArity con)
-               else cprSumRes (dataConTag con)
+  = vanillaCprConRes (dataConTag con) (dataConRepArity con)
   | otherwise
   = topRes
   where
-    is_prod = isProductTyCon tycon
     tycon = dataConTyCon con
     wkr_arity = dataConRepArity con
 
