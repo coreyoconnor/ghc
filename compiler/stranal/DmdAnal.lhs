@@ -509,7 +509,7 @@ completeApp :: AnalEnv
 completeApp _ fun_ty_fun []
   = fun_ty_fun
 completeApp env (fun_ty, fun') (arg:args)
-  | isTyCoArg arg = completeApp env (fun_ty,                      App fun' arg)  args
+  | isTypeArg arg = completeApp env (fun_ty,                      App fun' arg)  args
   | otherwise     = completeApp env (res_ty `bothDmdType` arg_ty, App fun' arg') args
   where
     (arg_dmd, res_ty) = splitDmdTy fun_ty
