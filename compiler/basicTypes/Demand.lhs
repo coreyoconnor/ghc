@@ -862,15 +862,16 @@ isBotRes Diverges = True
 isBotRes _        = False
 
 returnsCPR :: DmdResult -> Bool
-returnsCPR dr = isJust (returnsCPR_maybe dr)
+returnsCPR dr = isJust (returnsCPR_maybe False dr)
 
-returnsCPR_maybe :: DmdResult -> Maybe ConTag
-returnsCPR_maybe (Converges c) = retCPR_maybe c
-returnsCPR_maybe (Dunno c)     = retCPR_maybe c
-returnsCPR_maybe _             = Nothing
+-- If the first argument is True, we only consider surely terminating DmdResults
+returnsCPR_maybe :: Bool -> DmdResult -> Maybe (ConTag, [DmdResult])
+returnsCPR_maybe _ (Converges c) = retCPR_maybe c
+returnsCPR_maybe False (Dunno c) = retCPR_maybe c
+returnsCPR_maybe _ _             = Nothing
 
-retCPR_maybe :: CPRResult -> Maybe ConTag
-retCPR_maybe (RetCon t _) = Just t
+retCPR_maybe :: CPRResult -> Maybe (ConTag, [DmdResult])
+retCPR_maybe (RetCon t rs) = Just (t,rs)
 retCPR_maybe NoCPR        = Nothing
 
 resTypeArgDmd :: DmdResult -> JointDmd
