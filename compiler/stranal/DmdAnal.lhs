@@ -522,6 +522,8 @@ dmdAnalVarApp env dmd fun args
   | Just con <- isDataConWorkId_maybe fun  -- Data constructor
   , isVanillaDataCon con
   , n_val_args == dataConRepArity con      -- Saturated
+  , dataConRepArity con > 0
+  , dataConRepArity con < 10 -- TODO: Sync with mAX_CPR_SIZE in MkId
   , let cpr_info = cprConRes (dataConTag con) arg_rets
         res_ty = foldl bothDmdType (DmdType emptyDmdEnv [] cpr_info) arg_tys
   = -- pprTrace "dmdAnalVarApp" (vcat [ ppr con, ppr args, ppr n_val_args, ppr cxt_ds
