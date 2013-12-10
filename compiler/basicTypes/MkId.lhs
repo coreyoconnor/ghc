@@ -434,7 +434,7 @@ dataConCPR con
   , isVanillaDataCon con  -- No existentials 
   , wkr_arity > 0
   , wkr_arity <= mAX_CPR_SIZE
-  = vanillaCprConRes (dataConTag con) (dataConRepArity con)
+  = vanillaCprConRes (isProductDataCon con) (dataConTag con) (dataConRepArity con)
   | otherwise
   = topRes
   where

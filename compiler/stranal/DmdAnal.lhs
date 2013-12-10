@@ -524,8 +524,8 @@ dmdAnalVarApp env dmd fun args
   , n_val_args == dataConRepArity con      -- Saturated
   , dataConRepArity con > 0
   , dataConRepArity con < 10 -- TODO: Sync with mAX_CPR_SIZE in MkId
-  , let cpr_info = cprConRes (dataConTag con) arg_rets
-        res_ty = foldl bothDmdType (DmdType emptyDmdEnv [] cpr_info) arg_tys
+  , let dmd_res = cprConRes (isProductDataCon con) (dataConTag con) arg_rets
+        res_ty = foldl bothDmdType (DmdType emptyDmdEnv [] dmd_res) arg_tys
   = -- pprTrace "dmdAnalVarApp" (vcat [ ppr con, ppr args, ppr n_val_args, ppr cxt_ds
     --                                , ppr arg_tys, ppr cpr_info, ppr res_ty]) $
     ( res_ty
@@ -639,28 +639,32 @@ dmdAnalRhs :: TopLevelFlag
 	   -> (StrictSig,  DmdEnv, Id, CoreExpr)
 -- Process the RHS of the binding, add the strictness signature
 -- to the Id, and augment the environment with the signature as well.
-dmdAnalRhs top_lvl rec_flag env id rhs
+dmdAnalRhs top_lvl rec_flag env var rhs
   | Just fn <- unpackTrivial rhs   -- See Note [Trivial right-hand sides]
   , let fn_str = getStrictness env fn
-  = (fn_str, emptyDmdEnv, set_idStrictness env id fn_str, rhs)
+  = (fn_str, emptyDmdEnv, set_idStrictness env var fn_str, rhs)
 
   | otherwise
-  = (sig_ty, lazy_fv, id', mkLams bndrs' body')
+  = (sig_ty, lazy_fv, var', mkLams bndrs' body')
   where
     (bndrs, body)        = collectBinders rhs
     env_body             = foldl extendSigsWithLam env bndrs
     (DmdType body_fv _      body_res, body')  = dmdAnal env_body body_dmd body
-    (DmdType rhs_fv rhs_dmds rhs_res, bndrs') = annotateLamBndrs env (isDFunId id)
+    (DmdType rhs_fv rhs_dmds rhs_res, bndrs') = annotateLamBndrs env (isDFunId var)
                                                   (DmdType body_fv [] body_res) bndrs
-    sig_ty               = mkStrictSig (mkDmdType sig_fv rhs_dmds rhs_res')
-    id'		         = set_idStrictness env id sig_ty
+    sig_ty               = mkStrictSig $
+                           mkDmdType sig_fv rhs_dmds $
+                                handle_sum_cpr $
+                                handle_thunk_cpr $
+                                rhs_res
+    var'                 = set_idStrictness env var sig_ty
 	-- See Note [NOINLINE and strictness]
 
     -- See Note [Product demands for function body]
-    (is_sum_type, body_dmd)
+    body_dmd
       = case deepSplitProductType_maybe (exprType body) of
-          Nothing            -> (True, cleanEvalDmd)
-          Just (dc, _, _, _) -> (False, cleanEvalProdDmd (dataConRepArity dc))
+          Nothing            -> cleanEvalDmd
+          Just (dc, _, _, _) -> cleanEvalProdDmd (dataConRepArity dc)
 
     -- See Note [Lazy and unleashable free variables]
     -- See Note [Aggregated demand for cardinality]
@@ -671,16 +675,18 @@ dmdAnalRhs top_lvl rec_flag env id rhs
     (lazy_fv, sig_fv) = splitFVs is_thunk rhs_fv1
 
     -- Note [CPR for sum types]
-    rhs_res' | (is_sum_type && not (isTopLevel top_lvl)) ||
-               (is_thunk && not_strict)                = forgetCPR rhs_res
-             | otherwise                               = rhs_res
+    handle_sum_cpr | isTopLevel top_lvl = id
+                   | otherwise          = forgetSumCPR
 
     -- See Note [CPR for thunks]
+    handle_thunk_cpr | is_thunk && not_strict = forgetCPR
+                     | otherwise              = id
+
     is_thunk = not (exprIsHNF rhs)
-    not_strict 
-       =  isTopLevel top_lvl  -- Top level and recursive things don't 
+    not_strict
+       =  isTopLevel top_lvl  -- Top level and recursive things don't
        || isJust rec_flag     -- get their demandInfo set at all
-       || not (isStrictDmd (idDemandInfo id) || ae_virgin env)
+       || not (isStrictDmd (idDemandInfo var) || ae_virgin env)
           -- See Note [Optimistic CPR in the "virgin" case]
 
 unpackTrivial :: CoreExpr -> Maybe Id
@@ -865,6 +871,9 @@ However this means in turn that the *enclosing* function
 may be CPR'd (via the returned Justs).  But in the case of
 sums, there may be Nothing alternatives; and that messes
 up the sum-type CPR.
+
+This also applies to nested CPR information: Keep product CPR information, but
+zap sum CPR information therein.
 
 Conclusion: only do this for products.  It's still not
 guaranteed OK for products, but sums definitely lose sometimes.

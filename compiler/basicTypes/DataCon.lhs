@@ -38,6 +38,7 @@ module DataCon (
 	dataConRepStrictness, dataConRepBangs, dataConBoxer,
 
 	splitDataProductType_maybe,
+        isProductDataCon,
 
         tyConsOfTyCon,
 
@@ -1131,6 +1132,9 @@ splitDataProductType_maybe ty
   = Just (tycon, ty_args, con, dataConInstArgTys con ty_args)
   | otherwise
   = Nothing
+
+isProductDataCon :: DataCon -> Bool
+isProductDataCon dc = isProductTyCon (dataConTyCon dc)
 
 -- | All type constructors used in the definition of this type constructor,
 --   recursively. This is used to find out all the type constructors whose data
