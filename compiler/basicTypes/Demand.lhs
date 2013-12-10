@@ -865,7 +865,7 @@ cprConRes isProd tag arg_ress
   | opt_NestedCprOff = Converges $ cutCPRResult flatCPRDepth $ retCon arg_ress
   | otherwise        = Converges $ cutCPRResult maxCPRDepth  $ retCon arg_ress
   where retCon | isProd    = RetProd
-               | otherwise = RetSum tag
+               | otherwise = RetSum tag . map (const topRes)
 
 vanillaCprConRes :: Bool -> ConTag -> Arity -> DmdResult
 vanillaCprConRes isProd tag arity = cprConRes isProd tag (replicate arity topRes)
