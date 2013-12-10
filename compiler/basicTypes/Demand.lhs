@@ -1519,6 +1519,7 @@ dmdTransformDataConSig arity (StrictSig (DmdType _ _ con_res))
                              (CD { sd = str, ud = abs })
   | Just str_dmds <- go_str arity str
   , Just abs_dmds <- go_abs arity abs
+  , WARN( True, text "dmdTransformDataConSig indeed still in use" ) True
   = DmdType emptyDmdEnv (mkJointDmds str_dmds abs_dmds) con_res
                 -- Must remember whether it's a product, hence con_res, not TopRes
 
