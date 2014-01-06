@@ -720,9 +720,6 @@ x86_isMetaInstr instr
 
 
 -- | Make a reg-reg move instruction.
---      On SPARC v8 there are no instructions to move directly between
---      floating point and integer regs. If we need to do that then we
---      have to go via memory.
 --
 x86_mkRegRegMoveInstr
     :: Platform
