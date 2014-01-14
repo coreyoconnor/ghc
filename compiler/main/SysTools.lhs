@@ -395,7 +395,7 @@ runPp :: DynFlags -> [Option] -> IO ()
 runPp dflags args =   do
   let prog = pgm_F dflags
       opts = map Option (getOpts dflags opt_F)
-  runSomething dflags "Haskell pre-processor" prog (opts ++ args)
+  runSomething dflags "Haskell pre-processor" prog (args ++ opts)
 
 runCc :: DynFlags -> [Option] -> IO ()
 runCc dflags args =   do
@@ -638,6 +638,7 @@ neededLinkArgs :: LinkerInfo -> [Option]
 neededLinkArgs (GnuLD o)     = o
 neededLinkArgs (GnuGold o)   = o
 neededLinkArgs (DarwinLD o)  = o
+neededLinkArgs (SolarisLD o) = o
 neededLinkArgs UnknownLD     = []
 
 -- Grab linker info and cache it in DynFlags.
@@ -676,6 +677,14 @@ getLinkerInfo' dflags = do
   -- Process the executable call
   info <- catchIO (do
              case os of
+               OSSolaris2 ->
+                 -- Solaris uses its own Solaris linker. Even all
+                 -- GNU C are recommended to configure with Solaris
+                 -- linker instead of using GNU binutils linker. Also
+                 -- all GCC distributed with Solaris follows this rule
+                 -- precisely so we assume here, the Solaris linker is
+                 -- used.
+                 return $ SolarisLD []
                OSDarwin ->
                  -- Darwin has neither GNU Gold or GNU LD, but a strange linker
                  -- that doesn't support --version. We can just assume that's
